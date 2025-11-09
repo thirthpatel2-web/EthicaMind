@@ -13,7 +13,7 @@ except Exception:
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "http://localhost:3000"}})
+CORS(app)
 
 API_KEY = os.environ.get("ETHICAMIND_API_KEY", None)
 
