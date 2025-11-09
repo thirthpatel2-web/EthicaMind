@@ -25,7 +25,9 @@ export default function ChatWindow() {
     setInput("");
 
     try {
-      const resp = await fetch("http://localhost:5000/api/chat", {
+     
+const BACKEND_URL = process.env.REACT_APP_API_URL || "http://localhost:5000";
+const resp = await fetch(`${BACKEND_URL}/api/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
