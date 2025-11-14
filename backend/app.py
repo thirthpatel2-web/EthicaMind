@@ -13,6 +13,15 @@ except Exception:
 load_dotenv()
 
 app = Flask(__name__)
+# simple root/health endpoint (add this near your other routes)
+@app.route("/", methods=["GET", "HEAD"])
+def root():
+    return jsonify({"status": "ok", "service": "EthicaMind"}), 200
+
+# optional health check endpoint
+@app.route("/healthz", methods=["GET", "HEAD"])
+def healthz():
+    return "OK", 200
 CORS(app)
 
 API_KEY = os.environ.get("ETHICAMIND_API_KEY", None)
