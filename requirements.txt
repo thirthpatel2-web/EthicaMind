@@ -1,0 +1,6 @@
+Flask>=3.0
+Flask-CORS>=3.0
+python-dotenv
+google-genai>=1.49.0
+google-generativeai>=0.8.5
+gunicorn
