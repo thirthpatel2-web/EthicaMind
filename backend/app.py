@@ -4,233 +4,127 @@ import time
 import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from dotenv import load_dotenv
 
-# Load .env (if exists)
-load_dotenv()
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("ethicamind")
 
-# --- Logging ---
-logger = logging.getLogger("ethicamind")
-handler = logging.StreamHandler()
-formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-
-# --- Config ---
-ETHICAMIND_API_KEY = os.getenv("ETHICAMIND_API_KEY") or os.getenv("ETHICAMIND_API_KEY".upper())
-DEMO_MODE = os.getenv("ETHICAMIND_DEMO_MODE", "false").lower() in ("1", "true", "yes")
-
-# Create Flask app
 app = Flask(__name__)
-# Allow CORS from your frontend (adjust origin if needed)
-CORS(app, origins=["http://localhost:3000", "https://ethica-mind.vercel.app", "*"])
+CORS(app)
 
-# --- Triage system (detect crisis) ---
-def TriageSystem(message: str):
-    if not message:
-        return None
-    m = message.lower()
-    CRISIS_LIST = [
-        "kill myself", "i want to die", "want to die", "no reason to live",
-        "suicide", "i will kill myself", "end my life", "i can't go on"
-    ]
-    for keyword in CRISIS_LIST:
-        if keyword in m:
-            return True
-    return None
+# Read API key from env
+API_KEY = os.getenv("ETHICAMIND_API_KEY")
+if not API_KEY:
+    log.warning("ETHICAMIND_API_KEY not set; using fallback responses only.")
 
-# --- Ethical Guardrail (deny list) ---
-def EthicalGuardrail(message: str):
-    if not message:
-        return None
-    m = message.lower()
-    DENY_LIST = [
-        "diagnose me", "prescription", "what pills", "medical advice",
-        "how to perform surgery", "how to treat disease", "give me a diagnosis"
-    ]
-    for kw in DENY_LIST:
-        if kw in m:
-            return (
-                "I am a wellness assistant, not a medical professional. "
-                "I cannot provide a diagnosis or medical advice. Please consult a doctor."
+# Try to import the preferred client
+GENAI_CLIENT = None
+GENAI_TYPE = None
+
+def try_import_clients():
+    global GENAI_CLIENT, GENAI_TYPE
+    try:
+        import google_genai as genai  # package 'google-genai'
+        GENAI_CLIENT = genai
+        GENAI_TYPE = "google_genai"
+        log.info("google_genai SDK available.")
+    except Exception as e1:
+        log.info("google_genai not available: %s", e1)
+        try:
+            import google.generativeai as ga  # older package name
+            GENAI_CLIENT = ga
+            GENAI_TYPE = "google.generativeai"
+            log.info("google.generativeai SDK available.")
+        except Exception as e2:
+            log.info("No supported Google GenAI SDK available: %s | %s", e1, e2)
+            GENAI_CLIENT = None
+            GENAI_TYPE = None
+
+try_import_clients()
+
+# If google_genai is present, configure it
+if GENAI_CLIENT and GENAI_TYPE == "google_genai" and API_KEY:
+    # google_genai usage
+    try:
+        GENAI_CLIENT.configure(api_key=API_KEY)
+        log.info("Configured google_genai client.")
+    except Exception as e:
+        log.exception("Failed to configure google_genai: %s", e)
+
+if GENAI_CLIENT and GENAI_TYPE == "google.generativeai" and API_KEY:
+    try:
+        GENAI_CLIENT.configure(api_key=API_KEY)
+        log.info("Configured google.generativeai client.")
+    except Exception as e:
+        log.exception("Failed to configure google.generativeai: %s", e)
+
+
+def send_to_model(message_text, timeout_s=10):
+    """
+    Try google_genai first, then google.generativeai; else fallback.
+    Returns a string reply.
+    """
+    if not API_KEY:
+        log.warning("No API key provided — using fallback response.")
+        return "Sorry — I'm having trouble reaching the AI service; please try again later."
+
+    if GENAI_CLIENT and GENAI_TYPE == "google_genai":
+        try:
+            # google-genai client usage (typical)
+            resp = GENAI_CLIENT.chat.create(
+                model="chat-bison-001",
+                input=message_text,
+                max_output_tokens=256
             )
-    return None
-
-# ----------------------------
-# Model-calling helpers
-# ----------------------------
-
-def send_to_model(message: str):
-    """
-    Try multiple client styles to call a Google GenAI / Gemini-style API.
-    This function attempts to work with either:
-     - google_genai (google-genai) library
-     - google.generativeai library (older style)
-    If your project uses a different client pattern, replace the internals of this
-    function with the exact call shape you already had.
-    Returns: str (AI response text)
-    Raises: Exception on total failure.
-    """
-    # Quick demo-mode shortcut: return canned reply (if you want guaranteed deterministic behavior)
-    if DEMO_MODE:
-        logger.info("DEMO_MODE enabled: returning canned demo response.")
-        return "Hello — thanks for checking in. I'm EthicaMind, here to support you."
-
-    # 1) Try google_genai (package name: google_genai)
-    try:
-        import google_genai as genai  # installed on Render in your logs
-        # try if there is a client already created at module-level
-        client = globals().get("genai_client", None)
-
-        # there are different calling patterns; try module-level chat.create then client.chat.create
-        try:
-            if client:
-                logger.info("Using genai_client.chat.create(...)")
-                resp = client.chat.create(model="chat-bison-001", messages=[{"role":"user","content":message}])
-            else:
-                logger.info("Using google_genai.chat.create(...)")
-                resp = genai.chat.create(model="chat-bison-001", messages=[{"role":"user","content":message}])
-        except Exception as e:
-            # try alternate model id or method name depending on SDK version
-            logger.exception("First google_genai attempt failed: %s", e)
-            # fallback attempt (some versions expose generate/text methods)
-            if client and hasattr(client, "generate"):
-                resp = client.generate(model="text-bison-001", prompt=message)
-            else:
-                raise
-
-        # Try common extraction patterns:
-        # pattern A: resp.output[0].content[0].text
-        try:
-            out = resp.output[0].content[0].text
-            return out
-        except Exception:
-            pass
-
-        # pattern B: resp.choices[0].message.content[0].text
-        try:
-            out = resp.choices[0].message.content[0].text
-            return out
-        except Exception:
-            pass
-
-        # pattern C: resp.text or str(resp)
-        if hasattr(resp, "text"):
-            return resp.text
-        return str(resp)
-    except Exception as ex:
-        logger.exception("google_genai attempt failed: %s", ex)
-
-    # 2) Try google.generativeai (older package name)
-    try:
-        import google.generativeai as ga
-        if ETHICAMIND_API_KEY:
-            try:
-                # older style init
-                ga.configure(api_key=ETHICAMIND_API_KEY)
-            except Exception:
-                pass
-        # Attempt a chat call (shape may vary)
-        try:
-            resp = ga.chat.create(model="chat-bison-001", messages=[{"role":"user","content":message}])
-            # extraction:
-            try:
-                return resp.output[0].content[0].text
-            except Exception:
-                pass
-            try:
-                return resp.choices[0].message.content[0].text
-            except Exception:
-                pass
+            # The exact shape may vary; handle sensibly
+            if hasattr(resp, "candidates") and len(resp.candidates) > 0:
+                return resp.candidates[0].content
+            if hasattr(resp, "output") and isinstance(resp.output, str):
+                return resp.output
+            # generic fallback
             return str(resp)
-        except Exception as inner:
-            logger.exception("google.generativeai chat.create failed: %s", inner)
-            raise inner
-    except Exception as ex2:
-        logger.exception("google.generativeai attempt failed: %s", ex2)
-
-    # If we reach here, we could not call any supported GenAI client
-    raise RuntimeError("No supported GenAI client available (or all calls failed).")
-
-def call_genai_with_retries(message: str, max_retries: int = 3, initial_delay: float = 1.0):
-    """
-    Retry wrapper with exponential backoff.
-    Returns: text (str) on success, or None if exhausted.
-    """
-    delay = initial_delay
-    attempt = 0
-    while attempt < max_retries:
-        attempt += 1
-        try:
-            logger.info("GenAI call attempt %d for message length %d", attempt, len(message))
-            ai_text = send_to_model(message)
-            # if send_to_model returned something (non-empty), return it
-            if ai_text is not None:
-                return ai_text
         except Exception as e:
-            # Log full exception so Render logs show the root cause
-            logger.exception("GenAI call failed on attempt %d: %s", attempt, e)
-            # If this was the last attempt, fall through to fallback
-            if attempt >= max_retries:
-                logger.warning("Exhausted GenAI retries (%d). Will use fallback.", max_retries)
-                return None
-            # Wait then retry (exponential backoff)
-            logger.info("Sleeping %.1fs before next retry...", delay)
-            time.sleep(delay)
-            delay *= 2.0
-    return None
+            log.exception("GenAI (google_genai) call exception: %s", e)
 
-# ----------------------------
-# Flask endpoint
-# ----------------------------
+    if GENAI_CLIENT and GENAI_TYPE == "google.generativeai":
+        try:
+            # older google.generativeai usage
+            resp = GENAI_CLIENT.generate_text(model="chat-bison-001", prompt=message_text)
+            # adjust to response shape
+            if hasattr(resp, "text"):
+                return resp.text
+            return str(resp)
+        except Exception as e:
+            log.exception("GenAI (google.generativeai) call exception: %s", e)
+
+    # If all GenAI calls fail, return fallback message
+    log.warning("Exhausted GenAI clients; using fallback.")
+    return "Sorry — I'm having trouble reaching the AI service; please try again later."
+
+
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
-def api_chat():
-    # Handle CORS preflight
+def chat():
     if request.method == "OPTIONS":
-        return jsonify({"ok": True}), 200
-
+        return ("", 204)
     data = request.get_json(silent=True) or {}
-    message = data.get("message", "") if isinstance(data, dict) else ""
+    msg = data.get("message", "").strip()
+    if not msg:
+        return jsonify({"error": "no message provided"}), 400
 
-    # immediate empty message handling
-    if not message:
-        return jsonify({"type": "chat", "message": "Please enter a message."})
+    log.info("Incoming message (len=%d): %s", len(msg), msg[:120])
+    reply = None
+    try:
+        reply = send_to_model(msg)
+    except Exception as e:
+        log.exception("Failed to get model reply: %s", e)
+        reply = "Sorry — I'm having trouble reaching the AI service; please try again later."
 
-    # 1) Triage crisis check
-    if TriageSystem(message):
-        logger.info("TriageSystem triggered for message: %s", message[:80])
-        return jsonify({"type": "CRISIS_TRIAGE"})
+    return jsonify({"type": "chat", "message": reply})
 
-    # 2) Guardrail check
-    guard_resp = EthicalGuardrail(message)
-    if guard_resp is not None:
-        logger.info("EthicalGuardrail triggered for message: %s", message[:80])
-        return jsonify({"type": "chat", "message": guard_resp})
-
-    # 3) If demo-mode is enabled, return canned response (deterministic demo)
-    if DEMO_MODE:
-        demo_text = "I hear you. It's completely okay to feel stressed sometimes. Be kind to yourself today."
-        return jsonify({"type": "chat", "message": demo_text})
-
-    # 4) Call GenAI with retries
-    ai_text = call_genai_with_retries(message, max_retries=3, initial_delay=1.0)
-
-    if ai_text is None:
-        # final friendly fallback (frontend will display this)
-        fallback_text = "Sorry — I'm having trouble reaching the AI service; please try again later."
-        return jsonify({"type": "chat", "message": fallback_text})
-
-    # 5) success
-    return jsonify({"type": "chat", "message": ai_text})
-
-# Root route (optional)
-@app.route("/", methods=["GET"])
+# Root route to get a simple health check page
+@app.route("/")
 def index():
-    return jsonify({"ok": True, "message": "EthicaMind backend"}), 200
+    return "EthicaMind backend is running."
 
-# Run locally
 if __name__ == "__main__":
-    logger.info("Starting EthicaMind Flask app (local dev)")
-    # When run by gunicorn on Render, this block is not executed.
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=False)
+    # Local dev: enable debug only locally
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
