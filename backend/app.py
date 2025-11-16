@@ -32,68 +32,102 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 
 # --- GenAI calling helpers -----------------------------------------------
-def send_to_model(message: str) -> Optional[str]:
+# --- diagnostic send_to_model (temporary) ---------------------------------
+# --- GenAI calling helpers (robust import + model selection) ----------------
+import json
+from google.genai import errors as _ga_errors  # type: ignore  # optional, used in some clients
+
+def send_to_model(message: str) -> str | None:
     """
-    Try supported GenAI clients in order. On success return text (string).
-    On total failure return None.
-    Full exceptions are logged server-side.
+    Try available Google GenAI clients in order:
+      1) google.genai (preferred modern package)
+      2) google_genai (some installs expose this)
+      3) google.generativeai (older)
+    Returns generated text or None on no-client/error.
+    All exceptions are logged server-side.
     """
-    # 1) try google_genai (newer package often named google-genai)
+    # pick model names that are known to exist on your account (diagnostic list earlier showed many).
+    preferred_models = [
+        "gemini-2.5-flash",           # if available on your paid plan
+        "gemini-2.5-flash-lite",      # cheaper
+        "gemini-pro-latest",
+        "gemini-flash-latest",
+        "gemini-2.0-flash"            # fallback older
+    ]
+
+    # 1) try google.genai (recommended)
+    try:
+        import google.genai as genai  # type: ignore
+        logger.info("Using google.genai client.")
+        client = genai.Client(api_key=os.getenv("ETHICAMIND_API_KEY"))
+
+        # Try preferred models in order until one works
+        for model_name in preferred_models:
+            try:
+                logger.info("Attempt generate_content with model: %s", model_name)
+                resp = client.models.generate_content(model=model_name, contents=message)
+                # Extract text carefully
+                ai_text = ""
+                # resp.candidates is typical shape; adapt if different
+                if getattr(resp, "candidates", None):
+                    for part in getattr(resp.candidates[0].content, "parts", []):
+                        if hasattr(part, "text"):
+                            ai_text += part.text
+                # if other shape: try resp.output or resp.text
+                if not ai_text and hasattr(resp, "output"):
+                    ai_text = getattr(resp, "output", "") or ""
+                if ai_text:
+                    return ai_text.strip()
+            except Exception as e:
+                # Log the candidate failure and continue to next model
+                logger.exception("Generate attempt failed for model %s; trying next model.", model_name)
+        logger.warning("google.genai client available but no model succeeded.")
+    except Exception:
+        logger.exception("google.genai import or call failed.")
+
+    # 2) try older package name google_genai (some installs expose this top-level)
     try:
         import google_genai as genai  # type: ignore
-        logger.info("Attempting call with google_genai client.")
-        # Example: adapt this to the actual call shape you used during local dev.
-        # This is a minimal example calling a hypothetical client method:
-        client = genai.Client(api_key=ETHICAMIND_API_KEY) if hasattr(genai, "Client") else None
-        if client:
-            # NOTE: change to your actual call signature used locally if different.
-            resp = client.chat(message=message)
-            # try common attribute names
-            ai_text = getattr(resp, "text", None) or getattr(resp, "content", None) or str(resp)
-            return ai_text
-        # If no client class available, fall through to exception
-        raise RuntimeError("google_genai client object not available (stub).")
+        logger.info("Using google_genai client.")
+        client = genai.Client(api_key=os.getenv("ETHICAMIND_API_KEY"))
+        # best-effort call (names may differ)
+        try:
+            resp = client.models.generate_content(model=preferred_models[0], contents=message)
+            ai_text = ""
+            if getattr(resp, "candidates", None):
+                for part in getattr(resp.candidates[0].content, "parts", []):
+                    if hasattr(part, "text"):
+                        ai_text += part.text
+            if ai_text:
+                return ai_text.strip()
+        except Exception:
+            logger.exception("google_genai call failed.")
     except Exception:
-        logger.exception("google_genai attempt failed")
+        logger.info("google_genai not installed or import failed.")
 
-    # 2) try google.generativeai (older package / google-generativeai)
+    # 3) try google.generativeai (older library)
     try:
         import google.generativeai as ga  # type: ignore
-        logger.info("Attempting call with google.generativeai client.")
-        # Example usage: adapt to your code
-        # ga.configure(api_key=ETHICAMIND_API_KEY)
-        # resp = ga.generate_text(model="models/xxx", input=message)
-        # ai_text = resp.text or resp.output or str(resp)
-        # For safety here we'll attempt multiple known shapes:
-        if hasattr(ga, "configure"):
-            try:
-                ga.configure(api_key=ETHICAMIND_API_KEY)
-            except Exception:
-                pass
-        # If the library has a simple generate function:
-        if hasattr(ga, "generate_text"):
-            try:
-                resp = ga.generate_text(input=message)
-                ai_text = getattr(resp, "text", None) or getattr(resp, "output", None) or str(resp)
-                return ai_text
-            except Exception:
-                logger.exception("generate_text call using google.generativeai failed")
-        # else fallthrough
-        raise RuntimeError("google.generativeai call not implemented in stub.")
+        logger.info("Using google.generativeai client.")
+        # usage varies by version; example:
+        # ga.configure(api_key=os.getenv("ETHICAMIND_API_KEY"))
+        # resp = ga.generate_text(model="some-model", prompt=message)
+        # adapt to the specific version you installed
+        raise RuntimeError("google.generativeai path not implemented - update here if needed")
     except Exception:
-        logger.exception("google.generativeai attempt failed")
+        logger.exception("google.generativeai attempt failed or is unimplemented.")
 
-    # No supported client succeeded
+    # nothing worked
     return None
 
 
 def call_genai_with_retries(message: str, max_attempts: int = 3, base_delay: float = 1.0) -> str:
     """
-    Wraps send_to_model with retries + exponential backoff.
+    Wrap send_to_model with retries + exponential backoff.
     Returns final AI text OR a safe fallback message.
     """
     for attempt in range(1, max_attempts + 1):
-        logger.info("GenAI call attempt %d for message length %d", attempt, len(message))
+        logger.info(f"GenAI call attempt {attempt} for message length {len(message)}")
         try:
             ai_text = send_to_model(message)
             if ai_text:
@@ -103,13 +137,16 @@ def call_genai_with_retries(message: str, max_attempts: int = 3, base_delay: flo
         except Exception:
             logger.exception("Unhandled exception while calling send_to_model")
 
+        # backoff
         sleep_for = base_delay * (2 ** (attempt - 1))
-        logger.info("Sleeping %.1fs before next retry...", sleep_for)
+        logger.info(f"Sleeping {sleep_for:.1f}s before next retry...")
         time.sleep(sleep_for)
 
+    # Exhausted retries -> fallback
     logger.warning("Exhausted GenAI retries; using fallback.")
-    return "Sorry — I'm having trouble reaching the AI service; please try again later."
-
+    fallback_text = "Sorry — I'm having trouble reaching the AI service; please try again later."
+    return fallback_text
+# --- end GenAI helpers ---
 
 # --- Simple crisis/triage detector (very small example) --------------------
 CRISIS_KEYWORDS = {"kill", "suicide", "die", "ending", "end my life", "harm myself"}
