@@ -11,3 +11,6 @@ frontend/build/
 
 # VSCode
 .vscode/
+
+# Root-level installs
+node_modules/
