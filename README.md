@@ -73,7 +73,7 @@ EthicaMind/
 - EthicaMind is a **prototype, not a medical or therapy service**.
 - The crisis check is a simple keyword list, a safety net rather than a clinical assessment.
 - The Insights chart currently shows sample data.
-- The crisis screen currently offers US options (call 911, text 741741). For users in India, the national mental-health helpline is **Tele-MANAS: 14416** (and **112** for emergencies).
+- The crisis screen offers India's national mental-health helpline **Tele-MANAS (14416, free, 24x7)** and the **112** emergency number.
 
 ## 👤 Author
 

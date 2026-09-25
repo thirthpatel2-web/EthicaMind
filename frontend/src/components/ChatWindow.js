@@ -103,8 +103,8 @@ const resp = await fetch(`${BACKEND_URL}/api/chat`, {
             <h2>It sounds like you are in serious distress</h2>
             <p>Your safety is most important. Here are resources that can help you right now:</p>
             <div className="crisis-actions">
-              <a href="tel:911" className="crisis-button">Call 911</a>
-              <a href="sms:741741" className="crisis-button">Text Crisis Line</a>
+              <a href="tel:14416" className="crisis-button">Call Tele-MANAS 14416 (24x7, free)</a>
+              <a href="tel:112" className="crisis-button">Emergency: Call 112</a>
             </div>
             <button className="crisis-close" onClick={() => setShowCrisisModal(false)}>Close</button>
           </div>
